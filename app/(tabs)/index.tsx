@@ -1,74 +1,172 @@
-import { Image, StyleSheet, Platform } from 'react-native';
-
-import { HelloWave } from '@/components/HelloWave';
-import ParallaxScrollView from '@/components/ParallaxScrollView';
-import { ThemedText } from '@/components/ThemedText';
-import { ThemedView } from '@/components/ThemedView';
+import React, { useState, useRef } from 'react';
+import { View, StyleSheet, Text, TextInput, Button, Alert, Platform } from 'react-native';
+import { collection, doc, setDoc, getDoc, onSnapshot, addDoc } from 'firebase/firestore';
+import { firestore } from './firebase'; // Import Firestore instance
 
 export default function HomeScreen() {
+  const [callId, setCallId] = useState('');
+  const [isCalling, setIsCalling] = useState(false);
+  const [localStream, setLocalStream] = useState(null);
+  const [remoteStream, setRemoteStream] = useState(null);
+  const peerConnection = useRef(null);
+
+  const servers = {
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  };
+
+  const startCall = async () => {
+    const callDocRef = doc(collection(firestore, 'calls'));
+    const offerCandidatesRef = collection(callDocRef, 'offerCandidates');
+    const answerCandidatesRef = collection(callDocRef, 'answerCandidates');
+
+    setCallId(callDocRef.id);
+    setIsCalling(true);
+
+    peerConnection.current = new RTCPeerConnection(servers);
+
+    // Add local stream tracks to peer connection
+    if (localStream) {
+      localStream.getTracks().forEach((track) => peerConnection.current.addTrack(track, localStream));
+    }
+
+    peerConnection.current.onicecandidate = (event) => {
+      if (event.candidate) {
+        addDoc(offerCandidatesRef, event.candidate.toJSON());
+      }
+    };
+
+    peerConnection.current.ontrack = (event) => {
+      setRemoteStream(event.streams[0]);
+    };
+
+    const offerDescription = await peerConnection.current.createOffer();
+    await peerConnection.current.setLocalDescription(offerDescription);
+
+    const offer = {
+      sdp: offerDescription.sdp,
+      type: offerDescription.type,
+    };
+
+    await setDoc(callDocRef, { offer });
+
+    // Listen for answer
+    onSnapshot(callDocRef, (snapshot) => {
+      const data = snapshot.data();
+      if (data?.answer) {
+        const answerDescription = new RTCSessionDescription(data.answer);
+        peerConnection.current.setRemoteDescription(answerDescription);
+      }
+    });
+
+    // Listen for ICE candidates
+    onSnapshot(answerCandidatesRef, (snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'added') {
+          const candidate = new RTCIceCandidate(change.doc.data());
+          peerConnection.current.addIceCandidate(candidate);
+        }
+      });
+    });
+  };
+
+  const joinCall = async () => {
+    const callDocRef = doc(firestore, 'calls', callId);
+    const offerCandidatesRef = collection(callDocRef, 'offerCandidates');
+    const answerCandidatesRef = collection(callDocRef, 'answerCandidates');
+
+    peerConnection.current = new RTCPeerConnection(servers);
+
+    if (localStream) {
+      localStream.getTracks().forEach((track) => peerConnection.current.addTrack(track, localStream));
+    }
+
+    peerConnection.current.onicecandidate = (event) => {
+      if (event.candidate) {
+        addDoc(answerCandidatesRef, event.candidate.toJSON());
+      }
+    };
+
+    peerConnection.current.ontrack = (event) => {
+      setRemoteStream(event.streams[0]);
+    };
+
+    const callDoc = await getDoc(callDocRef);
+    if (!callDoc.exists()) {
+      Alert.alert('Error', 'Call ID not found');
+      return;
+    }
+
+    const callData = callDoc.data();
+    const offerDescription = callData.offer;
+    await peerConnection.current.setRemoteDescription(new RTCSessionDescription(offerDescription));
+
+    const answerDescription = await peerConnection.current.createAnswer();
+    await peerConnection.current.setLocalDescription(answerDescription);
+
+    const answer = {
+      type: answerDescription.type,
+      sdp: answerDescription.sdp,
+    };
+
+    await setDoc(callDocRef, { answer }, { merge: true });
+
+    // Listen for ICE candidates
+    onSnapshot(offerCandidatesRef, (snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'added') {
+          const candidate = new RTCIceCandidate(change.doc.data());
+          peerConnection.current.addIceCandidate(candidate);
+        }
+      });
+    });
+  };
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12'
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-        <ThemedText>
-          Tap the Explore tab to learn more about what's included in this starter app.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          When you're ready, run{' '}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+    <View style={styles.container}>
+      {!isCalling ? (
+        <>
+          <Text style={styles.title}>Enter Call ID to Join</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Enter Call ID"
+            value={callId}
+            onChangeText={setCallId}
+          />
+          <Button title="Start Call" onPress={startCall} />
+          <Button title="Join Call" onPress={joinCall} />
+        </>
+      ) : (
+        <>
+          <Text style={styles.title}>Call ID: {callId}</Text>
+          <Text>Waiting for the other user to join...</Text>
+        </>
+      )}
+      {remoteStream && (
+        <View>
+          <Text>Connected!</Text>
+        </View>
+      )}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
+  container: {
+    flex: 1,
+    padding: 16,
+    justifyContent: 'center',
     alignItems: 'center',
-    gap: 8,
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
+  title: {
+    fontSize: 20,
+    marginBottom: 10,
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  input: {
+    height: 40,
+    borderColor: '#ccc',
+    borderWidth: 1,
+    marginBottom: 10,
+    paddingHorizontal: 8,
+    width: '80%',
   },
 });
